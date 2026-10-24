@@ -5,11 +5,11 @@
 
 .DESCRIPTION
   1. Backs up ~/.codex/{AGENTS.md,config.toml}, and the skills, agents and theme this repo owns, to
-     ~/.codex/backups/codex-setup-<stamp>/
+     ~/.codex/backups/codex-setup-<stamp>/, then keeps the 10 newest codex-setup-* folders there
   2. Copies global/AGENTS.md, skills/* (to ~/.agents/skills), agents/*.toml and themes/*.tmTheme into ~/.codex
   3. Merges config/codex.toml into config.toml with `python -I codex_config.py merge`: only our keys change, every
      other byte survives. A merge that refuses (exit 2) fails the install with its message and leaves config.toml alone
-  4. Unless -SkipPlugins: when `codex plugin list` has no enabled superpowers row, runs
+  4. Unless -SkipPlugins: when `codex plugin list --json` has no enabled superpowers entry, runs
      `codex plugin add superpowers@openai-curated-remote`
   5. Prints the check table (every file and config key above, the plugin, the codex CLI) and fails when a row is FAIL
   6. Runs `codex doctor` and shows its summary lines without failing on them; warns about node_repl, a desktop-app
@@ -39,6 +39,8 @@ $statePath = Join-Path $codexDir 'codex-setup-state.json'
 $configPath = Join-Path $codexDir 'config.toml'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $backup = Join-Path $codexDir "backups\codex-setup-$stamp"
+$keepBackups = 10      # newest codex-setup-* folders kept in backups\
+$superpowersId = 'superpowers@openai-curated-remote'
 $failures = @()
 $quiet = [bool]$Json   # -Json: stdout carries the JSON document only, so nothing else is written to the host
 
@@ -120,6 +122,12 @@ if (-not $Check) {
   foreach ($s in $skillSrc) { Add-BackupItem (Join-Path $skillsDir $s.Name) "skills\$($s.Name)" }
   foreach ($a in $agentSrc) { Add-BackupItem (Join-Path $codexDir "agents\$($a.Name)") "agents\$($a.Name)" }
   foreach ($t in $themeSrc) { Add-BackupItem (Join-Path $codexDir "themes\$($t.Name)") "themes\$($t.Name)" }
+  # Names sort by stamp, so everything past the newest $keepBackups goes; other folders in backups\ are left alone.
+  $backupRoot = Join-Path $codexDir 'backups'
+  if (Test-Path -LiteralPath $backupRoot) {
+    Get-ChildItem -LiteralPath $backupRoot -Directory -Filter 'codex-setup-*' | Sort-Object Name -Descending |
+      Select-Object -Skip $keepBackups | Remove-Item -Recurse -Force
+  }
 
   Write-Step 'Copy AGENTS.md, skills, agents and themes'
   Copy-ToDir $agentsMd $codexDir
@@ -145,10 +153,21 @@ if (-not $Check) {
 # ---- codex CLI: plugin and version ----
 $pluginState = 'skipped'; $codexState = 'skipped'
 function Get-SuperpowersState {
-  # `codex plugin list` prints one line per plugin, e.g. `name@marketplace   installed, enabled   version   source`.
-  $r = Invoke-Native 'codex' @('plugin', 'list')
-  if ($r.Code -ne 0) { return 'plugin list failed' }
-  foreach ($l in $r.Lines) { if ($l -match 'superpowers' -and $l -match '\benabled\b') { return 'enabled' } }
+  # `codex plugin list --json` prints {"installed": [{pluginId, installed, enabled, ...}], "available": [...]}. Only stdout
+  # is parsed (stderr noise would break the JSON), so this call doesn't go through Invoke-Native.
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $text = (@(& codex plugin list --json 2>$null | ForEach-Object { "$_" }) | Out-String)
+    $code = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $prev }
+  if ($code -ne 0) { return 'plugin list failed' }
+  $doc = $null
+  try { $doc = $text | ConvertFrom-Json } catch { }
+  if (-not $doc -or -not $doc.PSObject.Properties['installed']) { return 'plugin list failed' }
+  foreach ($p in @($doc.installed)) {
+    if ($p.pluginId -ceq $superpowersId -and $p.installed -eq $true -and $p.enabled -eq $true) { return 'enabled' }
+  }
   return 'not enabled'
 }
 if (-not $SkipPlugins) {
@@ -162,7 +181,7 @@ if (-not $SkipPlugins) {
     $pluginState = Get-SuperpowersState
     if ($pluginState -ne 'enabled' -and -not $Check) {
       Write-Color '    superpowers is not enabled: adding it' 228
-      $add = Invoke-Native 'codex' @('plugin', 'add', 'superpowers@openai-curated-remote')
+      $add = Invoke-Native 'codex' @('plugin', 'add', $superpowersId)
       if ($add.Code -ne 0) { Write-Color "    codex plugin add failed: $($add.Out)" 203 }
       $pluginState = Get-SuperpowersState
     }
@@ -201,13 +220,16 @@ if ($cfgDoc -and $cfgDoc.PSObject.Properties['rows']) {
 Add-Row 'superpowers plugin' 'enabled' $(if ($SkipPlugins) { 'skipped' } else { $pluginState }) ($pluginState -eq 'enabled') ([bool]$SkipPlugins)
 Add-Row 'codex' 'on PATH' $(if ($SkipPlugins) { 'skipped' } else { $codexState }) ([bool]($codexCmd -and $codexState -ne 'unknown')) ([bool]$SkipPlugins)
 
+# The console table caps long cells (the status_line arrays); -Json and the failure messages keep the full values.
+$cellMax = 40
+function Format-Cell([string]$text) { if ($text.Length -gt $cellMax) { $text.Substring(0, $cellMax - 3) + '...' } else { $text } }
 $wName = ($rows | ForEach-Object { $_.Name.Length } | Measure-Object -Maximum).Maximum
-$wExp = ($rows | ForEach-Object { $_.Expected.Length } | Measure-Object -Maximum).Maximum
-$wAct = ($rows | ForEach-Object { $_.Actual.Length } | Measure-Object -Maximum).Maximum
+$wExp = ($rows | ForEach-Object { (Format-Cell $_.Expected).Length } | Measure-Object -Maximum).Maximum
+$wAct = ($rows | ForEach-Object { (Format-Cell $_.Actual).Length } | Measure-Object -Maximum).Maximum
 Write-Color ("    {0}  {1}  {2}  {3}" -f 'name'.PadRight($wName), 'expected'.PadRight($wExp), 'actual'.PadRight($wAct), 'ok') 244
 foreach ($row in $rows) {
   $color = switch ($row.Status) { 'ok' { 223 } 'skipped' { 228 } default { 203 } }
-  Write-Color ("    {0}  {1}  {2}  {3}" -f $row.Name.PadRight($wName), $row.Expected.PadRight($wExp), $row.Actual.PadRight($wAct), $row.Status) $color
+  Write-Color ("    {0}  {1}  {2}  {3}" -f $row.Name.PadRight($wName), (Format-Cell $row.Expected).PadRight($wExp), (Format-Cell $row.Actual).PadRight($wAct), $row.Status) $color
   if ($row.Status -eq 'FAIL') { $failures += "$($row.Name): expected $($row.Expected), got $($row.Actual)" }
 }
 

@@ -156,6 +156,89 @@ class InstallTest(unittest.TestCase):
         self.assertIn("tui.theme", out + err)
         self.assertEqual(read(path), seed)
 
+    def fake_codex(self, plugin_json, version="codex-cli 9.9.9", code=0):
+        # A codex.cmd at the front of PATH; the JSON sits in a file and is `type`d, so cmd never escapes it.
+        d = os.path.join(self.tmp, "fakebin")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "list.json"), "w", encoding="utf-8", newline="") as f:
+            f.write(json.dumps(plugin_json))
+        with open(os.path.join(d, "codex.cmd"), "w", newline="") as f:
+            f.write("@echo off\r\n"
+                    f"if \"%1\"==\"--version\" (echo {version}& exit /b 0)\r\n"
+                    "if \"%1 %2 %3\"==\"plugin list --json\" (type \"%~dp0list.json\"& "
+                    f"exit /b {code})\r\n"
+                    "exit /b 1\r\n")
+        return self.env(PATH=d + os.pathsep + without_codex(os.environ["PATH"]))
+
+    def superpowers_row(self, entries, **kw):
+        env = self.fake_codex({"installed": entries, "available": []}, **kw)
+        code, doc, err = self.check(env=env)
+        return {r["name"]: r for r in doc["rows"]}["superpowers plugin"]
+
+    def test_superpowers_exact_id_enabled(self):
+        row = self.superpowers_row([{"pluginId": "superpowers@openai-curated-remote", "installed": True, "enabled": True}])
+        self.assertEqual((row["status"], row["actual"]), ("ok", "enabled"))
+
+    def test_superpowers_lookalike_id_fails(self):
+        row = self.superpowers_row([{"pluginId": "superpowers-extra@x", "installed": True, "enabled": True}])
+        self.assertEqual((row["status"], row["actual"]), ("FAIL", "not enabled"))
+
+    def test_superpowers_disabled_fails(self):
+        row = self.superpowers_row([{"pluginId": "superpowers@openai-curated-remote", "installed": True, "enabled": False}])
+        self.assertEqual((row["status"], row["actual"]), ("FAIL", "not enabled"))
+
+    def test_superpowers_list_failure(self):
+        row = self.superpowers_row([], code=3)
+        self.assertEqual((row["status"], row["actual"]), ("FAIL", "plugin list failed"))
+
+    def test_backups_keep_the_newest_ten(self):
+        backups = os.path.join(self.codex, "backups")
+        for i in range(12):
+            os.makedirs(os.path.join(backups, "codex-setup-2020010%d-000000" % i if i < 10 else "codex-setup-202001%d-000000" % i))
+        os.makedirs(os.path.join(backups, "other"))
+        with open(os.path.join(self.codex, "AGENTS.md"), "w", encoding="utf-8") as f:
+            f.write("old" + chr(10))  # something to back up, so this run writes a backup too
+        code, out, err = self.run_install("-SkipPlugins")
+        self.assertEqual(code, 0, out + err)
+        left = sorted(d for d in os.listdir(backups) if d.startswith("codex-setup-"))
+        self.assertEqual(len(left), 10, left)
+        self.assertNotIn("codex-setup-20200100-000000", left)
+        self.assertTrue(left[-1] > "codex-setup-2021", left)  # this run's backup survives
+        self.assertTrue(os.path.isdir(os.path.join(backups, "other")))
+
+    def test_fresh_home_leaves_no_empty_backup(self):
+        self.assertEqual(self.run_install("-SkipPlugins")[0], 0)
+        backups = os.path.join(self.codex, "backups")
+        self.assertEqual(os.listdir(backups) if os.path.isdir(backups) else [], [])
+
+    def test_console_table_is_narrow_but_json_is_full(self):
+        code, out, err = self.run_install("-SkipPlugins")
+        self.assertEqual(code, 0, out + err)
+        self.assertLessEqual(max(len(l) for l in out.splitlines()), 160, out)
+        code, doc, err = self.check("-SkipPlugins")
+        row = {r["name"]: r for r in doc["rows"]}["config tui.status_line"]
+        self.assertGreater(len(row["expected"]), 40)
+        self.assertNotIn("...", row["expected"])
+
+    def run_ps51(self, *args):
+        exe = os.path.join(SYSTEM32, "WindowsPowerShell", "v1.0", "powershell.exe")
+        if not os.path.exists(exe):
+            self.skipTest("powershell.exe missing")
+        env = self.env()
+        env.pop("PSMODULEPATH", None)  # as install.cmd does (env keys are upper-case on Windows)
+        return subprocess.run([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                               os.path.join(ROOT, "install.ps1"), *args],
+                              capture_output=True, text=True, encoding="utf-8", env=env, timeout=300)
+
+    def test_runs_under_windows_powershell_51(self):
+        r = self.run_ps51("-SkipPlugins")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("DONE: all checks passed", r.stdout)
+        self.assertEqual(self.config()["model"], "gpt-6.1-sol")
+        r = self.run_ps51("-SkipPlugins", "-Check", "-Json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["failures"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
