@@ -42,6 +42,8 @@ class SkillsTest(unittest.TestCase):
         text = read("skills", "setup-check", "SKILL.md")
         self.assertIn("codex update", text)
         self.assertIn("not Git Bash", text)
+        # `codex update` leaves the background app-server daemon on the old version.
+        self.assertIn("codex app-server daemon update", text)
 
 
 if __name__ == "__main__":
