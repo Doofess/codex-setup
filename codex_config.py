@@ -7,7 +7,8 @@ The Codex desktop app writes the same file, so this is a line-based editor, not 
 replaces the lines of each owned key, or adds the key to its table (root keys go above the first
 table header), and keeps comments, ordering, line endings, the BOM and the final-newline state.
 It stops with exit 2 and leaves the file untouched when an owned key cannot be set safely: the file
-is not valid TOML, or a parent table is defined as a dotted root key or an inline table.
+is not valid TOML, or a parent table is defined as a dotted root key, an inline table or an array
+of tables ([[table]]). A comment after a replaced value stays on its line.
 
 check prints one JSON line with a row per owned key and exits 1 when any row is not ok.
 """
@@ -18,7 +19,7 @@ import sys
 import time
 import tomllib
 
-BOM = "﻿"
+BOM = "\ufeff"
 _SEGMENT = r"""(?:[A-Za-z0-9_-]+|"[^"]*"|'[^']*')"""
 _KEY = rf"{_SEGMENT}(?:\s*\.\s*{_SEGMENT})*"
 KEY_LINE = re.compile(rf"^\s*({_KEY})\s*=")
@@ -75,7 +76,8 @@ def _segments(key_text):
 
 def _consume(line, ml, depth):
     """Reads one line of a value. ml is the open multi-line string delimiter or None; depth counts
-    open brackets. Returns the new (ml, depth). Brackets in strings and comments do not count."""
+    open brackets. Returns the new (ml, depth, comment); comment is the index of the "#" that starts a
+    comment on this line, or None. Brackets in strings and comments do not count."""
     i, n = 0, len(line)
     while i < n:
         if ml:
@@ -94,7 +96,7 @@ def _consume(line, ml, depth):
             continue
         c = line[i]
         if c == "#":
-            break
+            return ml, depth, i
         if line.startswith('"""', i) or line.startswith("'''", i):
             ml, i = line[i : i + 3], i + 3
         elif c in "\"'":
@@ -108,7 +110,7 @@ def _consume(line, ml, depth):
             elif c in "]}":
                 depth -= 1
             i += 1
-    return ml, depth
+    return ml, depth, None
 
 
 def _scan(lines):
@@ -132,14 +134,26 @@ def _scan(lines):
             m = KEY_LINE.match(text)
             ml, depth = None, 0
             j = i
-            rest = text[m.end() :] if m else text
+            base = m.end() if m else 0
+            rest = text[base:]
             while True:
-                ml, depth = _consume(rest, ml, depth)
+                ml, depth, comment = _consume(rest, ml, depth)
                 if (not ml and depth <= 0) or j + 1 >= len(lines):
                     break
                 j += 1
-                rest = lines[j][0]
-            out.append({"kind": "kv", "start": i, "end": j, "table": table, "key": _segments(m.group(1)) if m else []})
+                base, rest = 0, lines[j][0]
+            # comment: where a comment starts on the statement's last line, else None.
+            at = None if comment is None else base + comment
+            out.append(
+                {
+                    "kind": "kv",
+                    "start": i,
+                    "end": j,
+                    "table": table,
+                    "key": _segments(m.group(1)) if m else [],
+                    "comment": at,
+                }
+            )
             i = j + 1
     return out
 
@@ -171,11 +185,19 @@ def _dotted(table, key):
 
 
 def _refuse_foreign_parents(stmts, owned_keys):
-    """A table we own keys in must be a [header] table, not a dotted key or an inline table."""
+    """A table we own keys in must be a [header] table, not a dotted key, an inline table or an
+    array of tables."""
     for table, keys in owned_keys.items():
         if not table:
             continue
         path = table.split(".")
+        for s in stmts:
+            if s["kind"] == "header" and s["array"] and s["table"] == path[: len(s["table"])]:
+                names = ", ".join(_dotted(table, k) for k in keys)
+                raise MergeError(
+                    f"cannot set {names}: {'.'.join(s['table'])} is an array of tables "
+                    f"([[{'.'.join(s['table'])}]]) in the file, not a [{'.'.join(s['table'])}] table"
+                )
         for s in stmts:
             if s["kind"] != "kv":
                 continue
@@ -206,7 +228,10 @@ def _set_key(lines, nl, table, key, value):
     same = next((s for s in region if s["key"] == [key]), None)
     new = f"{key} = {value}"
     if same:
-        ending = lines[same["end"]][1]
+        content, ending = lines[same["end"]]
+        if same["comment"] is not None:
+            # Keep the note after the value, with the spaces before its "#".
+            new += content[len(content[: same["comment"]].rstrip()) :]
         lines[same["start"] : same["end"] + 1] = [[new, ending]]
     elif region:
         _insert_after(lines, region[-1]["end"], new, nl)

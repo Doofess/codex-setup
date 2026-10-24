@@ -47,6 +47,10 @@ own scheme, which claude-setup sets.
 
 The installer backs up what it replaces to `~/.codex/backups/codex-setup-<stamp>/` first, and is safe to re-run.
 
+**Restore**: each backup folder mirrors what it replaced (`AGENTS.md`, `config.toml`, `skills\<name>`,
+`agents\<file>`, `themes\<file>`). Copy the files back to `~/.codex` (skills to `~/.agents/skills`) and restart
+Codex. The 10 newest backups are kept.
+
 | Flag | Does |
 |---|---|
 | `-SkipPlugins` | Skips every step that calls `codex` (plugin, `codex doctor`, the version row); their rows read `skipped`. |

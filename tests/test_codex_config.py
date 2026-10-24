@@ -151,6 +151,70 @@ class MergeTest(unittest.TestCase):
             codex_config.merge('tui = { theme = "x" }\n', OWNED)
         self.assertIn("tui.theme", str(ctx.exception))
 
+    def test_array_of_tables_for_an_owned_table_is_refused(self):
+        with self.assertRaises(codex_config.MergeError) as ctx:
+            codex_config.merge('[[tui]]\ntheme = "x"\n', OWNED)
+        self.assertIn("[[tui]]", str(ctx.exception))
+        self.assertIn("tui.theme", str(ctx.exception))
+        self.assertNotIn("invalid TOML", str(ctx.exception))
+
+    def test_array_of_tables_prefix_of_an_owned_table_is_refused(self):
+        with self.assertRaises(codex_config.MergeError) as ctx:
+            codex_config.merge("[[features]]\nx = 1\n", OWNED)
+        self.assertIn("[[features]]", str(ctx.exception))
+        self.assertIn("features.fast_mode", str(ctx.exception))
+
+    def test_deeper_array_of_tables_does_not_block_the_merge(self):
+        out = codex_config.merge("[[tui.foo]]\nx = 1\n", OWNED)
+        doc = self.assert_owned(out)
+        self.assertEqual(doc["tui"]["foo"], [{"x": 1}])
+
+    def test_trailing_comment_is_kept(self):
+        out = codex_config.merge('model = "old"  # my note\n', OWNED)
+        self.assert_owned(out)
+        self.assertIn('model = "gpt-6.1-sol"  # my note\n', out)
+
+    def test_line_without_a_comment_gets_no_trailing_space(self):
+        out = codex_config.merge('model = "old"   \n', OWNED)
+        self.assertIn('model = "gpt-6.1-sol"\n', out)
+        out = codex_config.merge('model = "old"\n', OWNED)
+        self.assertIn('model = "gpt-6.1-sol"\n', out)
+
+    def test_hash_inside_the_old_string_is_not_a_comment(self):
+        out = codex_config.merge("model = \"a#b\"  # c\nmodel_reasoning_effort = 'x#y'\n", OWNED)
+        self.assert_owned(out)
+        self.assertIn('model = "gpt-6.1-sol"  # c\n', out)
+        self.assertNotIn("a#b", out)
+        self.assertNotIn("x#y", out)
+        out = codex_config.merge('model = "a#b"\n', OWNED)
+        self.assertIn('model = "gpt-6.1-sol"\n', out)
+
+    def test_multiline_array_keeps_only_the_comment_after_the_closing_bracket(self):
+        src = '[tui]\nstatus_line = [  # old list\n  "a",  # first\n  "b",\n]  # end note\ntheme = "x"\n'
+        out = codex_config.merge(src, OWNED)
+        self.assert_owned(out)
+        self.assertIn("]  # end note\n", out)
+        self.assertNotIn("old list", out)
+        self.assertNotIn("first", out)
+
+    def test_comment_after_a_multiline_string_close_is_kept(self):
+        src = 'model = """\nold # not a comment\n"""  # kept\n'
+        out = codex_config.merge(src, OWNED)
+        self.assert_owned(out)
+        self.assertIn('model = "gpt-6.1-sol"  # kept\n', out)
+        self.assertNotIn("not a comment", out)
+
+    def test_trailing_comment_keeps_crlf(self):
+        out = codex_config.merge('model = "old" # note\r\n[tui]\r\nx = 1\r\n', OWNED)
+        self.assert_owned(out)
+        self.assertIn('model = "gpt-6.1-sol" # note\r\n', out)
+        self.assertNotIn("\n", out.replace("\r\n", ""))
+
+    def test_bom_is_written_as_an_escape(self):
+        with open(codex_config.__file__, "rb") as f:
+            self.assertFalse(b"\xef\xbb\xbf" in f.read())
+        self.assertEqual(codex_config.BOM, "\ufeff")
+
     def test_invalid_input_is_refused(self):
         with self.assertRaises(codex_config.MergeError) as ctx:
             codex_config.merge("model = \n[", OWNED)
