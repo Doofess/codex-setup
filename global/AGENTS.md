@@ -12,7 +12,7 @@
 
 ## Models and usage
 - Sessions run on gpt-6.1-sol at high effort. For the hardest problems, `/model` to gpt-6-astra at xhigh, then max if still stuck. Pick the model at session start rather than switching mid-session.
-- Delegate whenever the work means reading or editing more than a couple of files, and name the agent when you spawn it: `explorer` (gpt-6-luna, low, read-only) for search and reading files; `worker` (gpt-6.1-sol, medium) for implementation, with high effort for concurrency, parsers, security, or after a failed first attempt.
+- Delegate whenever the work means reading or editing more than a couple of files, and name the agent when you spawn it: `explorer` (gpt-6-luna, low, read-only) for search and reading files; `worker` (gpt-6.1-sol, medium) for implementation; `worker_high` (gpt-6.1-sol, high) instead for concurrency, parsers, security, or after a failed first attempt.
 - Web research goes to `worker`; check its findings before acting on them. Review a whole branch yourself on gpt-6-astra.
 - For a second opinion or a background task from Claude Code, use the `$claude` skill.
 

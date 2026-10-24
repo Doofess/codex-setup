@@ -38,6 +38,7 @@ class ContentTests(unittest.TestCase):
     def test_agents(self):
         want = {
             "worker": ("gpt-6.1-sol", "medium"),
+            "worker_high": ("gpt-6.1-sol", "high"),
             "explorer": ("gpt-6-luna", "low"),
         }
         files = sorted((ROOT / "agents").glob("*.toml"))
@@ -48,6 +49,12 @@ class ContentTests(unittest.TestCase):
             self.assertEqual((data["model"], data["model_reasoning_effort"]), want[f.stem])
             self.assertTrue(data["description"].strip())
             self.assertTrue(data["developer_instructions"].strip())
+
+    def test_rules_send_hard_work_to_worker_high(self):
+        # A spawn's own effort may not override the agent file's, so high effort is its own agent.
+        rules = read("global/AGENTS.md")
+        self.assertIn("`worker_high`", rules)
+        self.assertNotIn("with high effort for", rules)
 
     def test_explorer_says_read_only(self):
         data = tomllib.loads(read("agents/explorer.toml"))

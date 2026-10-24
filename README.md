@@ -28,8 +28,9 @@ own scheme, which claude-setup sets.
   questions in Plan mode, superpowers' `writing-plans` and `executing-plans`, delegate to agents, verify before
   saying done.
 - **Models**: `gpt-6.1-sol` at high effort; `/model` to `gpt-6-astra` at xhigh, then max, for the hardest problems.
-- **Two agents**: `worker` (`gpt-6.1-sol`, medium, implementation briefs) and `explorer` (`gpt-6-luna`, low,
-  read-only search; replaces the built-in one).
+- **Three agents**: `worker` (`gpt-6.1-sol`, medium, implementation briefs), `worker_high` (the same at high effort,
+  for concurrency, parsers, security or a second attempt) and `explorer` (`gpt-6-luna`, low, read-only search;
+  replaces the built-in one). High effort is its own agent because a spawn's effort may not override the agent file's.
 - **No prompts**: `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`, as claude-setup's bypass
   mode. The rules still ask before what can't be undone.
 - **Fast mode off**, as in Claude Code.
