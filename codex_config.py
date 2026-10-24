@@ -26,6 +26,7 @@ HEADER_LINE = re.compile(rf"^\s*(\[\[?)\s*({_KEY})\s*\]\]?\s*(?:#.*)?$")
 SEGMENT = re.compile(_SEGMENT)
 SWAP_TRIES = 50
 SWAP_WAIT = 0.1
+MERGE_TRIES = 3
 
 
 class MergeError(Exception):
@@ -80,8 +81,14 @@ def _consume(line, ml, depth):
         if ml:
             if ml == '"""' and line[i] == "\\":
                 i += 2
-            elif line.startswith(ml, i):
-                ml, i = None, i + 3
+            elif line[i] == ml[0]:
+                # A run of 3 to 5 quotes ends the string: the last three close it, the rest is content.
+                run = 1
+                while line.startswith(ml[0], i + run):
+                    run += 1
+                if run >= 3:
+                    ml = None
+                i += run
             else:
                 i += 1
             continue
@@ -229,6 +236,39 @@ def _same(a, b):
     return type(a) is type(b) and a == b
 
 
+def _overlay(doc, owned_keys):
+    """doc with every owned value set, creating tables as needed."""
+    for table, keys in owned_keys.items():
+        node = doc
+        for part in filter(None, table.split(".")):
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                break
+        else:
+            node.update(keys)
+    return doc
+
+
+def _first_difference(want, got, path=""):
+    """The dotted path of the first place two parsed documents differ (types included), or None."""
+    if isinstance(want, dict) and isinstance(got, dict):
+        for k in want:
+            where = f"{path}.{k}" if path else k
+            if k not in got:
+                return where
+            diff = _first_difference(want[k], got[k], where)
+            if diff:
+                return diff
+        return next((f"{path}.{k}" if path else k for k in got if k not in want), None)
+    if isinstance(want, list) and isinstance(got, list) and len(want) == len(got):
+        for i, (a, b) in enumerate(zip(want, got, strict=True)):
+            diff = _first_difference(a, b, f"{path}[{i}]")
+            if diff:
+                return diff
+        return None
+    return None if type(want) is type(got) and want == got else path
+
+
 def merge(text, owned_keys):
     """Returns text with every owned key set. Raises MergeError and changes nothing when it cannot."""
     bom = text.startswith(BOM)
@@ -255,6 +295,10 @@ def merge(text, owned_keys):
             found, actual = _lookup(doc, table, key)
             if not found or not _same(actual, value):
                 raise MergeError(f"the merge would not set {_dotted(table, key)}")
+    # Whatever the scanner did, nothing but the owned keys may differ from the input.
+    changed = _first_difference(_overlay(tomllib.loads(body), owned_keys), doc)
+    if changed:
+        raise MergeError(f"the merge would change {changed}, which we do not own")
     return (BOM if bom else "") + out
 
 
@@ -279,30 +323,51 @@ def check(text, owned_keys):
     return rows
 
 
-def _read(path):
+def _read_bytes(path):
     try:
         with open(path, "rb") as f:
-            return f.read().decode("utf-8")
+            return f.read()
     except FileNotFoundError:
         return None
 
 
-def _write(path, text):
-    # Write beside the target, then swap, so the desktop app never reads half a file. The swap is
-    # retried while another process briefly holds the target open.
+def _read(path):
+    raw = _read_bytes(path)
+    return None if raw is None else raw.decode("utf-8")
+
+
+def _write(path, text, expected):
+    """Replaces path with text unless its bytes are no longer expected (None: no file); returns
+    whether it did. Writes beside the target, then swaps, so the desktop app never reads half a
+    file. The swap is retried while another process briefly holds the target open."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(text.encode("utf-8"))
     for attempt in range(SWAP_TRIES):
+        if _read_bytes(path) != expected:
+            os.remove(tmp)
+            return False
         try:
             os.replace(tmp, path)
-            return
+            return True
         except PermissionError:
             if attempt == SWAP_TRIES - 1:
                 os.remove(tmp)
                 raise
             time.sleep(SWAP_WAIT)
+    return False
+
+
+def _merge_file(keys, target):
+    """Merges into target; if the file changes under us, merges again from what is there now."""
+    for _ in range(MERGE_TRIES):
+        raw = _read_bytes(target)
+        current = None if raw is None else raw.decode("utf-8")
+        merged = merge(current or "", keys)
+        if merged == current or _write(target, merged, raw):
+            return
+    raise MergeError("config.toml kept changing during the merge")
 
 
 def main(argv):
@@ -320,9 +385,7 @@ def main(argv):
             rows = check(current or "", keys)
             print(json.dumps({"rows": rows}))
             return 0 if all(r["status"] == "ok" for r in rows) else 1
-        merged = merge(current or "", keys)
-        if merged != current:
-            _write(target, merged)
+        _merge_file(keys, target)
     except (MergeError, tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:
         print(f"codex_config: {e}".splitlines()[0], file=sys.stderr)
         return 2

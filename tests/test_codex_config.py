@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -5,6 +7,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -157,6 +160,48 @@ class MergeTest(unittest.TestCase):
         once = codex_config.merge("[desktop]\nx = 1\n", OWNED)
         self.assertEqual(codex_config.merge(once, OWNED), once)
 
+    def assert_other_keys_survive(self, src):
+        out = codex_config.merge(src, OWNED)
+        doc = self.assert_owned(out)
+        self.assertEqual(doc["desktop"]["followUpQueueMode"], "steer")
+        self.assertIs(doc["tui"]["screen_reader_detection_done"], True)
+        self.assertEqual(doc["tui"]["status_line"], OWNED["tui"]["status_line"])
+
+    def test_four_quote_multiline_string_keeps_other_keys(self):
+        self.assert_other_keys_survive(
+            '[features]\nfast_mode = false\n[tui]\nstatus_line = ["""git-branch""""]\n'
+            'screen_reader_detection_done = true\n[desktop]\nfollowUpQueueMode = "steer"\n'
+        )
+
+    def test_four_quote_literal_multiline_string_keeps_other_keys(self):
+        self.assert_other_keys_survive(
+            "[features]\nfast_mode = false\n[tui]\nstatus_line = ['''git-branch'''']\n"
+            'screen_reader_detection_done = true\n[desktop]\nfollowUpQueueMode = "steer"\n'
+        )
+
+    def test_unowned_change_is_refused(self):
+        real = codex_config._set_key
+
+        def lossy(lines, nl, table, key, value):
+            real(lines, nl, table, key, value)
+            lines[:] = [ln for ln in lines if "followUpQueueMode" not in ln[0]]
+
+        src = '[tui]\nx = 1\n[desktop]\nfollowUpQueueMode = "steer"\n'
+        with mock.patch.object(codex_config, "_set_key", lossy), self.assertRaises(codex_config.MergeError) as ctx:
+            codex_config.merge(src, OWNED)
+        self.assertIn("desktop.followUpQueueMode", str(ctx.exception))
+
+    def test_unowned_type_change_is_refused(self):
+        real = codex_config._set_key
+
+        def lossy(lines, nl, table, key, value):
+            real(lines, nl, table, key, value)
+            lines[:] = [[ln[0].replace("x = 1", "x = true"), ln[1]] for ln in lines]
+
+        with mock.patch.object(codex_config, "_set_key", lossy), self.assertRaises(codex_config.MergeError) as ctx:
+            codex_config.merge("[tui]\nx = 1\n", OWNED)
+        self.assertIn("tui.x", str(ctx.exception))
+
 
 class CheckTest(unittest.TestCase):
     def rows(self, text):
@@ -255,6 +300,57 @@ class CliTest(unittest.TestCase):
         self.assertIn("tui.theme", done.stderr)
         with open(self.target, "rb") as f:
             self.assertEqual(f.read(), raw)
+        self.assertEqual(os.listdir(os.path.dirname(self.target)), ["config.toml"])
+
+    def run_main(self, argv):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = codex_config.main(argv)
+        return code, err.getvalue()
+
+    def read_target(self):
+        with open(self.target, "rb") as f:
+            return f.read()
+
+    def foreign_writer(self, contents):
+        """merge() wrapper: after each merge the desktop app writes the next entry of contents."""
+        real = codex_config.merge
+        pending = list(contents)
+
+        def merge(text, owned_keys):
+            out = real(text, owned_keys)
+            if pending:
+                with open(self.target, "wb") as f:
+                    f.write(pending.pop(0))
+            return out
+
+        return merge
+
+    def test_concurrent_write_is_not_lost(self):
+        os.makedirs(os.path.dirname(self.target))
+        with open(self.target, "wb") as f:
+            f.write(b"[desktop]\nx = 1\n")
+        foreign = b"[desktop]\nx = 1\n[app]\nnew_key = 7\n"
+        with mock.patch.object(codex_config, "merge", self.foreign_writer([foreign])):
+            code, err = self.run_main(["merge", self.template, self.target])
+        self.assertEqual((code, err), (0, ""))
+        doc = tomllib.loads(self.read_target().decode("utf-8"))
+        self.assertEqual(doc["app"], {"new_key": 7})
+        self.assertEqual(doc["desktop"], {"x": 1})
+        self.assertEqual(doc["model"], "gpt-6.1-sol")
+        self.assertEqual(doc["tui"]["theme"], "clear")
+        self.assertEqual(os.listdir(os.path.dirname(self.target)), ["config.toml"])
+
+    def test_file_that_keeps_changing_exits_2_and_keeps_the_last_write(self):
+        os.makedirs(os.path.dirname(self.target))
+        with open(self.target, "wb") as f:
+            f.write(b"[desktop]\nx = 1\n")
+        writes = [f"[desktop]\nx = {n}\n".encode() for n in (2, 3, 4, 5)]
+        with mock.patch.object(codex_config, "merge", self.foreign_writer(writes)):
+            code, err = self.run_main(["merge", self.template, self.target])
+        self.assertEqual(code, 2)
+        self.assertEqual(err.strip(), "codex_config: config.toml kept changing during the merge")
+        self.assertEqual(self.read_target(), writes[2])
         self.assertEqual(os.listdir(os.path.dirname(self.target)), ["config.toml"])
 
     def test_usage_error_exits_2(self):
