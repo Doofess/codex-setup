@@ -32,6 +32,7 @@ drift without anyone touching the setup.
    | Install stops with `codex_config: ...` naming a key | `config.toml` sets that key in a form the merge won't edit (a dotted key or an inline table). Show the line; with the user's yes, move it under its `[table]` header, then step 5. |
    | Codex not signed in (`codex doctor`) | `codex login` |
    | GitHub CLI not signed in | `gh auth login` |
+   | Codex out of date, or the user asks to update it | `codex update`, run from PowerShell, not Git Bash: there its updater's bare `tar` is Git's GNU tar, which can't extract to a `C:\` path, and it fails with "did not contain the expected package layout". |
 
 7. **Done only when step 4 exits 0 on the main checkout.** Quote its result: every row `ok` or `skipped`.
    Codex reads `config.toml`, `AGENTS.md`, skills and agents when it starts, so tell the user to start a new

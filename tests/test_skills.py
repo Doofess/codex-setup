@@ -31,6 +31,18 @@ class SkillsTest(unittest.TestCase):
         self.assertIn("verify", text.lower())
         self.assertIn("claude-answer.md", text)
 
+    def test_claude_skill_knows_when_the_run_ends(self):
+        # Without a process handle, Codex can't tell a finished run from a running one and reads an empty answer.
+        text = read("skills", "claude", "SKILL.md")
+        self.assertIn("-PassThru", text)
+        self.assertIn("HasExited", text)
+
+    def test_setup_check_updates_codex_from_powershell(self):
+        # From Git Bash, the updater's bare `tar` is Git's GNU tar, which can't extract to a C:\ path.
+        text = read("skills", "setup-check", "SKILL.md")
+        self.assertIn("codex update", text)
+        self.assertIn("not Git Bash", text)
+
 
 if __name__ == "__main__":
     unittest.main()

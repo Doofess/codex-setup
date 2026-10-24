@@ -23,7 +23,7 @@ Claude Code is installed on this PC and signed in to the user's Claude subscript
 2. **Run** it in the background, read-only, from the folder it should look at:
 
    ```powershell
-   Start-Process -WindowStyle Hidden cmd -ArgumentList '/c', 'claude -p --model sonnet --permission-mode dontAsk --allowedTools Read Grep Glob WebSearch WebFetch --no-session-persistence < "%TEMP%\claude-task\brief.md" > "%TEMP%\claude-task\claude-answer.md" 2>&1'
+   $claudeRun = Start-Process -PassThru -WindowStyle Hidden cmd -ArgumentList '/c', 'claude -p --model sonnet --permission-mode dontAsk --allowedTools Read Grep Glob WebSearch WebFetch --no-session-persistence < "%TEMP%\claude-task\brief.md" > "%TEMP%\claude-task\claude-answer.md" 2>&1'
    ```
 
    PowerShell has no `<` redirection, hence `cmd /c`. In Git Bash: `claude -p ... < "<scratch>/brief.md" >
@@ -33,7 +33,10 @@ Claude Code is installed on this PC and signed in to the user's Claude subscript
      default.
    - `--model opus` for the hardest questions or a whole-branch review; `sonnet` otherwise; `haiku` for a quick
      lookup.
-3. **Read** `claude-answer.md` once the process has exited. Check now and then rather than waiting in a loop.
+3. **Read** `claude-answer.md` only once `$claudeRun.HasExited` is `True` (the file fills as it runs, so an early read
+   is empty or partial). Keep working and check now and then rather than waiting in a loop. Shell state may not
+   survive between your commands: if `$claudeRun` is gone, `Get-Process -Id <its Id> -ErrorAction SilentlyContinue`
+   returning nothing means it has exited, so note the `Id` when you start it.
 4. **Verify** each claim you will act on: the files it names, `<command> --help`, or a test. Tell the user which
    parts you checked.
 
