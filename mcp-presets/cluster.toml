@@ -1,0 +1,32 @@
+# Copy into the cluster/backend repo's .codex/config.toml (the project must be trusted).
+# Needs docker, kubectl and helm on PATH. The Kubernetes server starts read-only;
+# remove --read-only only on a dev cluster. Secrets come from env_vars, never from the file.
+
+[mcp_servers.kubernetes]
+command = "npx"
+args = ["-y", "kubernetes-mcp-server@latest", "--read-only"]
+
+[mcp_servers.terraform]
+command = "docker"
+args = ["run", "-i", "--rm", "-e", "TFE_TOKEN", "hashicorp/terraform-mcp-server:0.4.0"]
+env_vars = ["TFE_TOKEN"]
+
+# Self-hosted Grafana. For Grafana Cloud replace this whole table with one that has
+# url = "https://mcp.grafana.com/mcp" and no command, args or env_vars.
+[mcp_servers.grafana]
+command = "docker"
+args = ["run", "--rm", "-i", "-e", "GRAFANA_URL", "-e", "GRAFANA_SERVICE_ACCOUNT_TOKEN", "grafana/mcp-grafana", "-t", "stdio"]
+env_vars = ["GRAFANA_URL", "GRAFANA_SERVICE_ACCOUNT_TOKEN"]
+
+[mcp_servers.sentry]
+url = "https://mcp.sentry.dev/mcp"
+
+[mcp_servers.postgres]
+command = "npx"
+args = ["-y", "@bytebase/dbhub"]
+env_vars = ["DSN"]
+
+# Rust crate docs for the Rust services. Context7 covers npm; it is weak on crates.
+[mcp_servers.docs-rs]
+command = "npx"
+args = ["-y", "@nuskey8/docs-rs-mcp@latest"]

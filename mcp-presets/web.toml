@@ -1,0 +1,29 @@
+# Copy into a web project's .codex/config.toml (the project must be trusted).
+# Delete the servers the project does not use. Each HTTP server signs in with OAuth on first use.
+# Secrets come from environment variables listed in env_vars, never from the file.
+
+[mcp_servers.supabase]
+url = "https://mcp.supabase.com/mcp"
+
+[mcp_servers.neon]
+url = "https://mcp.neon.tech/mcp"
+
+[mcp_servers.prisma]
+url = "https://mcp.prisma.io/mcp"
+
+# Generic Postgres/MySQL/SQLite introspection. Point DSN at a read-only role.
+# DBHub reads the connection string from the DSN environment variable.
+[mcp_servers.postgres]
+command = "npx"
+args = ["-y", "@bytebase/dbhub"]
+env_vars = ["DSN"]
+
+[mcp_servers.vercel]
+url = "https://mcp.vercel.com"
+
+[mcp_servers.sentry]
+url = "https://mcp.sentry.dev/mcp"
+
+[mcp_servers.posthog]
+url = "https://mcp.posthog.com/mcp"
+http_headers = { "x-posthog-mcp-consumer" = "plugin" }
